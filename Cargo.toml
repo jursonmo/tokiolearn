@@ -1,0 +1,22 @@
+[package]
+name = "tokiolearn"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+mini-redis = "0.4"
+tokio-tun = "0.7.0"
+pnet = "0.31.0"
+tokio-stream = "0.1.11"
+byteorder = "1.4.3"
+
+[[example]]
+name = "hello-redis"
+path = "example_1/hello-redis.rs"
+
+[[bin]]
+name = "selecttest"
+path = "src/bin/selecttest.rs"
