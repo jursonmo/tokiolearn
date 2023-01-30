@@ -75,6 +75,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let _: SocketAddr = addr.parse().unwrap();
     let _ = addr.parse::<SocketAddr>().expect("socket addr invalid");
 
+    //4. 利用 map_or 在Err的情况下返回默认值 或者Ok的情况下返回其他值。
+    let default_addr = "192.168.10.1:8080";
+    let f = |_| addr;
+    let addr = addr.parse::<SocketAddr>().map_or(default_addr, f);
+
     println!("connecting {}....", addr);
     //let stream: TcpStream = TcpStream::connect(addr).await?; //应该要循环不停conneting
     /*
@@ -129,6 +134,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
 
         let socket_info = format!("{:?}", stream);
+        //let socket_info_str = socket_info.as_str();
+        let socket_info_str = "test static str";
         let (mut r, mut w) = io::split(stream); //stream.split();
 
         //1. socket read --> tx -->rx --> tun write
@@ -156,6 +163,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         "socket:{} read loop quit, tx channel will be dropped",
                         socket_info
                     );
+                    println!("socket_info_str:{}", socket_info_str);
                     return;
                 }
 
@@ -239,7 +247,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(_) => println!("tun_write_task completed ok"),
             Err(e) => println!("tun_write_task completed err:{}", e),
         }
-
+        println!("socket_info_str:{}", socket_info_str);
         // loop {
         //     //select 是侦听future,而不是JoinHandel<>.
         //     tokio::select! {
