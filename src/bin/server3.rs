@@ -19,6 +19,8 @@ use tokio::sync::Mutex;
 #[allow(dead_code)]
 type Db = Arc<Mutex<HashMap<i32, Sender<Vec<u8>>>>>;
 type Fdb = Arc<Mutex<HashMap<MacAddr, Arc<Mutex<Sender<Vec<u8>>>>>>>;
+type Ports = Arc<Mutex<HashMap<String, Arc<Mutex<Sender<Vec<u8>>>>>>>;
+
 /*
 1. 打开tun 接口，创建tun_channel
   两个任务：
@@ -48,6 +50,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let fdb = Arc::new(Mutex::new(mac_map));
     let fdb_clone = fdb.clone();
 
+    //for broadcast
+    let ports_map: HashMap<String, Arc<Mutex<tokio::sync::mpsc::Sender<Vec<u8>>>>> =
+        HashMap::with_capacity(10);
+    let ports = Arc::new(Mutex::new(ports_map));
+    let ports_clone = ports.clone();
+
+    // let ports_map: HashMap<String, Arc<Mutex<tokio::sync::broadcast::Receiver<Vec<u8>>>>> = HashMap::with_capacity(10);
+    // let (btx, _) = tokio::sync::broadcast::channel(8);
+    // btx.send(vec![0, 1, 2]);
+
     tokio::spawn(async move {
         loop {
             if let Some(data) = tun_chan_rx.recv().await {
@@ -76,7 +88,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Ok(n) => {
                     println!("tun read n:{}", n);
                     BigEndian::write_u16(&mut buf, n as u16);
-                    forward_by_fdb(&fdb_clone, &buf[..n + 2]).await;
+                    forward_by_fdb(&fdb_clone, &ports_clone, &buf[..n + 2]).await;
                 }
             }
         }
@@ -90,25 +102,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let tun_chan_tx_clone = tun_chan_tx.clone();
         let fdb_clone = fdb.clone();
 
+        //let brx_clone = btx.subscribe();
+        //let arc_brx_clone = Arc::new(Mutex::new(brx_clone));
+
+        let ports_clone = ports.clone();
+
         tokio::spawn(async move {
             let socket_info = format!("{:?}", socket);
-            //let socket_info = socket_info.as_str();
             let socket_info_clone = socket_info.clone();
 
             let (tx, mut rx) = tokio::sync::mpsc::channel(128);
             let (r, mut w) = tokio::io::split(socket);
             let atx = Arc::new(Mutex::new(tx));
 
+            let mut ports = ports_clone.lock().await;
+            ports.insert(socket_info.clone(), atx.clone());
+            drop(ports);
+
             let socket_read_task = tokio::spawn(async move {
                 // In a loop, read data from the socket and write the data back.
                 let mut buf: [u8; 2048] = [0; 2048];
                 let mut r = BufReader::new(r);
                 loop {
-                    let n = r
-                        .read_exact(&mut buf[..2])
-                        .await
-                        .expect("failed to read data from socket");
-
+                    let ret = r.read_exact(&mut buf[..2]).await; //.expect("failed to read data from socket");
+                    let n = match ret {
+                        Ok(n) => n,
+                        Err(e) => {
+                            println!("---read socket data err:{}", e);
+                            //对方关闭socket,这里读任务会退出, 但是写任务是感知不到的, 怎么通知写任务退出呢？
+                            //socket 写任务发送数据时，对方才回应reset, 本端必须再发送一次数据，应用层才得到错误broken pipe
+                            return;
+                        }
+                    };
                     println!("socket read header n:{}", n);
                     if n == 0 {
                         println!("socket closed");
@@ -176,20 +201,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 println!(
                     "socket:{}, quit loop of rx read, tx have been dropped?",
                     socket_info_clone
-                )
+                );
             });
+
+            //这里有点问题：必须两个任务结束时, tokio::join 才返回，如果其中一个早就结束了，需要等另一个也结束。解决：tokio::select
             let (socket_read_task_result, socket_write_task_result) =
                 tokio::join!(socket_read_task, socket_write_task);
             match socket_read_task_result {
-                Ok(_) => println!("socket_read_task completed ok"),
-                Err(e) => println!("socket_read_task completed err:{}", e),
+                Ok(_) => println!("---socket_read_task completed ok"),
+                Err(e) => println!("---socket_read_task completed err:{}", e),
             }
             match socket_write_task_result {
-                Ok(_) => println!("socket_write_task completed ok"),
-                Err(e) => println!("socket_write_task completed err:{}", e),
+                Ok(_) => println!("---socket_write_task completed ok"),
+                Err(e) => println!("---socket_write_task completed err:{}", e),
             }
-            println!("socket {} all task completed", socket_info);
+            println!("--- socket {} all task completed", socket_info);
             //socket PollEvented { io: Some(TcpStream { addr: 192.168.10.1:8080, peer: 192.168.10.2:54448, fd: 12 }) } all task completed
+            let mut ports = ports_clone.lock().await;
+            ports.remove(&socket_info).unwrap();
         });
     }
 }
@@ -266,7 +295,7 @@ async fn forward(db_clone: &Db, buf: &[u8]) {
 }
 
 //tun data forward to one of socket
-async fn forward_by_fdb(fdb_clone: &Fdb, buf: &[u8]) {
+async fn forward_by_fdb(fdb_clone: &Fdb, ports_clone: &Ports, buf: &[u8]) {
     let dmac = match get_dmac(&buf[2..]) {
         Ok(dmac) => dmac,
         Err(e) => {
@@ -296,8 +325,9 @@ async fn forward_by_fdb(fdb_clone: &Fdb, buf: &[u8]) {
     }
 
     println!("can't find dmac:{} in fdb, need to broadcast", dmac);
-    //broadcast, 但是有多个mac 对应同一个socket tx的情况，所以这里不严谨，有待改善
-
+    //db_clone 是 mac-->socket tx 的对应关系，即有多个mac 对应同一个socket tx的情况
+    //broadcast, 这里是把数据往相同tx 发多次的情况，所以这里不严谨，有待改善
+    /*
     for tx in db_clone.values() {
         let ttx = tx.lock().await;
         // broadcast时，不想clone分配很多份data 内存，是不是可以用Arc 来减少内存的分配，还是用RefCell？broadcast channel?
@@ -306,6 +336,22 @@ async fn forward_by_fdb(fdb_clone: &Fdb, buf: &[u8]) {
             println!("receiver of socket droped");
         } else {
             println!("forward tun data to socket channel");
+        }
+    }
+    */
+    //drop 参考:https://doc.rust-lang.org/std/sync/struct.Mutex.html
+    drop(db_clone); //necessary to manually drop the mutex guard to unlock, 或者用中括号把db_clone固定在小的作用域里
+
+    //解决:把broadcast数据往相同tx 发多次的情况.
+    let ports = ports_clone.lock().await;
+    for (socket, tx) in ports.iter() {
+        let ttx = tx.lock().await;
+        // broadcast时，不想clone分配很多份data 内存，是不是可以用Arc 来减少内存的分配，还是用RefCell？broadcast channel?
+        let data_copy = data.clone();
+        if let Err(_) = ttx.send(data_copy).await {
+            println!("receiver of socket droped");
+        } else {
+            println!("forward tun data to socket:{} channel", socket);
         }
     }
 }
