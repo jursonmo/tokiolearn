@@ -1,5 +1,5 @@
 /*
-已解决:
+server4.rs 已解决:
 1. 如果client 把socket 关闭了，服务器这边socket_read_task 退出了，怎么通知socket_write_task 退出。 tokio_util cancel()
 2. 如果fdb mac 对应的tx 的接受rx 已经drop, 那么需要删除这个mac 条目
 3. fdb学习时：如果是arp, 必须更新fdb, 不管条目是否已经存在。如果是其他数据, 只有fdb mac 条目不存在时才插入新条目
