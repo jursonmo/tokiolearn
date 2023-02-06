@@ -1,8 +1,10 @@
 /*
+优化编译：cargo build --release --bin server4
 server4.rs 已解决:
 1. 如果client 把socket 关闭了，服务器这边socket_read_task 退出了，怎么通知socket_write_task 退出。 tokio_util cancel()
 2. 如果fdb mac 对应的tx 的接受rx 已经drop, 那么需要删除这个mac 条目
 3. fdb学习时：如果是arp, 必须更新fdb, 不管条目是否已经存在。如果是其他数据, 只有fdb mac 条目不存在时才插入新条目
+4. log:env_logger
 */
 
 use byteorder::{BigEndian, ByteOrder};
@@ -15,6 +17,8 @@ use std::env;
 use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+use log::{debug, error, info, log_enabled, warn, Level};
 
 #[allow(dead_code)]
 type Db = Arc<Mutex<HashMap<i32, Sender<Vec<u8>>>>>;
@@ -38,8 +42,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .nth(1)
         .unwrap_or_else(|| "0.0.0.0:8080".to_string());
 
+    env_logger::init();
     let listener = TcpListener::bind(&addr).await?;
-    println!("Listening on: {}", addr);
+    info!("Listening on: {}", addr);
 
     let tun = build_tun(true).unwrap();
     let (mut tun_reader, mut tun_writer) = tokio::io::split(tun);
@@ -67,10 +72,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 let ret = tun_writer.write(data.as_slice()).await;
                 match ret {
                     Err(e) => {
-                        println!("tun writer err:{}", e);
+                        error!("tun writer err:{}", e);
                         return;
                     }
-                    Ok(n) => { /*println!("tun writer n:{}", n)*/ }
+                    Ok(n) => {
+                        if log_enabled!(Level::Debug) {
+                            debug!("tun writer n:{}", n);
+                        }
+                    }
                 }
             }
         }
@@ -82,11 +91,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let ret = tun_reader.read(&mut buf[2..]).await;
             match ret {
                 Err(e) => {
-                    println!("tun read err:{}", e);
+                    error!("tun read err:{}", e);
                     return;
                 }
                 Ok(n) => {
                     //println!("tun read n:{}", n);
+                    if log_enabled!(Level::Debug) {
+                        debug!("tun read n:{}", n);
+                    }
                     BigEndian::write_u16(&mut buf, n as u16);
                     forward_by_fdb(&fdb_clone, &ports_clone, &buf[..n + 2]).await;
                 }
@@ -97,7 +109,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         // Asynchronously wait for an inbound socket.
         let (socket, addr) = listener.accept().await?;
-        println!("new conn from {}", addr);
+        info!("new conn from {}", addr);
 
         let tun_chan_tx_clone = tun_chan_tx.clone();
         let fdb_clone = fdb.clone();
@@ -264,9 +276,9 @@ async fn handle_client(
                     return;
                 }
             };
-            println!("socket read header n:{}", n);
+            debug!("socket read header n:{}", n);
             if n == 0 {
-                println!("socket closed");
+                error!("socket closed");
                 return;
             }
             assert_eq!(n, 2);
@@ -278,17 +290,18 @@ async fn handle_client(
                 .await
                 .expect("failed to read data from socket");
 
-            println!("socket read payload data n:{}", n);
             if n == 0 {
-                println!("socket closed");
+                error!("read 0, socket closed");
                 return;
             }
             assert_eq!(n, data_len);
 
+            debug!("socket read payload data n:{}", n);
+
             let (mac, is_arp) = get_smac(&buf[..n]);
             match mac {
                 Ok(smac) => {
-                    println!("get smac:{}, is_arp:{}, try to insert fdb", smac, is_arp);
+                    debug!("get smac:{}, is_arp:{}, try to insert fdb", smac, is_arp);
                     let mut fdb = fdb_clone.lock().await;
                     //entry.or_insert 只有不存在时才插入，存在就返回当前值
                     //fdb.entry(smac).or_insert(Arc::clone(&atx));
@@ -296,15 +309,15 @@ async fn handle_client(
                         //如果是arp, 必须更新fdb, 不管条目是否已经存在。
                         match fdb.insert(smac, Arc::clone(&atx)) {
                             //每个数据包都要调用Arc::clone,不合适，最好还是用entry(smac).or_insert
-                            Some(v) => println!("update ok , mac:{:?} old value:{:?}", smac, v),
-                            None => println!("insert new mac:{} to fdb", smac),
+                            Some(v) => info!("update ok , mac:{:?} old value:{:?}", smac, v),
+                            None => info!("insert new mac:{} to fdb", smac),
                         }
                     } else {
                         //如果是其他数据, 只有fdb mac 条目不存在时才插入新条目
                         fdb.entry(smac).or_insert(Arc::clone(&atx));
                     }
                 }
-                Err(e) => println!("{}", e),
+                Err(e) => debug!("{}", e),
             }
 
             let mut v: Vec<u8> = Vec::with_capacity(n);
@@ -313,9 +326,9 @@ async fn handle_client(
             //let ret = tx.send(v).await;
             let ret = tun_chan_tx_clone.send(v).await;
             match ret {
-                Ok(_) => println!("forward socket data to tun channel ok, n:{}", n),
+                Ok(_) => debug!("forward socket data to tun channel ok, n:{}", n),
                 Err(e) => {
-                    println!(
+                    error!(
                         "receiver dropped? read from socket and send channel err:{}",
                         e
                     );
@@ -343,21 +356,21 @@ async fn handle_client(
         loop {
             tokio::select! {
                 _= cloned_token.cancelled() => {
-                    println!("socket_write_task have been cancelled");
+                    error!("socket_write_task have been cancelled");
                     return;
                 }
                 recv = rx.recv() => {
                     if let Some(data) = recv{
                         let ret = w.write(data.as_slice()).await;
                         match ret {
-                            Ok(n) => println!("read from tun and write to socket n:{}", n),
+                            Ok(n) => debug!("read from tun and write to socket n:{}", n),
                             Err(e) => {
-                                println!("write to socket err:{}, return", e);
+                                error!("write to socket err:{}, return", e);
                                 return;
                             }
                         }
                     }else {
-                        println!("socket:{}, quit loop of rx read, tx have been dropped?",socket_info_clone);
+                        error!("socket:{}, quit loop of rx read, tx have been dropped?",socket_info_clone);
                         return;
                     }
                 }
@@ -369,14 +382,14 @@ async fn handle_client(
     let (socket_read_task_result, socket_write_task_result) =
         tokio::join!(socket_read_task, socket_write_task);
     match socket_read_task_result {
-        Ok(_) => println!("---socket_read_task completed ok"),
-        Err(e) => println!("---socket_read_task completed err:{}", e),
+        Ok(_) => warn!("---socket_read_task completed ok"),
+        Err(e) => error!("---socket_read_task completed err:{}", e),
     }
     match socket_write_task_result {
-        Ok(_) => println!("---socket_write_task completed ok"),
-        Err(e) => println!("---socket_write_task completed err:{}", e),
+        Ok(_) => warn!("---socket_write_task completed ok"),
+        Err(e) => error!("---socket_write_task completed err:{}", e),
     }
-    println!("--- socket {} all task completed", socket_info);
+    warn!("--- socket {} all task completed", socket_info);
     //socket PollEvented { io: Some(TcpStream { addr: 192.168.10.1:8080, peer: 192.168.10.2:54448, fd: 12 }) } all task completed
     let mut ports = ports_clone.lock().await;
     ports.remove(&socket_info).unwrap();
@@ -486,13 +499,11 @@ async fn forward_by_fdb(fdb_clone: &Fdb, ports_clone: &Ports, buf: &[u8]) {
         let ttx = tx.lock().await;
         //if let Err(_) = ttx.send(data).await { //recommend by clippy
         if ttx.send(data).await.is_err() {
-            println!("receiver of socket droped");
+            error!("receiver of socket droped");
 
             //如果没有接受者,可以把这个fdb条目删除,
             //db_clone.remove(&dmac);但是编译出错，原因是ttx 没有drop,db_clone还是不可变引用的作用域里，而这里db_clone必须是可变引用。所以编译出错。
             should_remove = true;
-        } else {
-            println!("forward tun data to socket channel");
         }
         if should_remove {
             drop(ttx); //结束ttx的作用域;  --- db_clone immutable borrow later used here; 这样就可以对db_clone进行可变引用了。
@@ -501,7 +512,7 @@ async fn forward_by_fdb(fdb_clone: &Fdb, ports_clone: &Ports, buf: &[u8]) {
         return;
     }
 
-    println!("can't find dmac:{} in fdb, need to broadcast", dmac);
+    info!("can't find dmac:{} in fdb, need to broadcast", dmac);
     //db_clone 是 mac-->socket tx 的对应关系，即有多个mac 对应同一个socket tx的情况
     //broadcast, 这里是把数据往相同tx 发多次的情况，所以这里不严谨，有待改善
     /*
@@ -527,9 +538,9 @@ async fn forward_by_fdb(fdb_clone: &Fdb, ports_clone: &Ports, buf: &[u8]) {
         let data_copy = data.clone();
         //if let Err(_) = ttx.send(data_copy).await {
         if ttx.send(data_copy).await.is_err() {
-            println!("receiver of socket droped");
+            error!("receiver of socket droped");
         } else {
-            println!("forward tun data to socket:{} channel", socket);
+            debug!("forward tun data to socket:{} channel", socket);
         }
     }
 }
