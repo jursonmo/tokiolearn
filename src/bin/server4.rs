@@ -1,5 +1,7 @@
 /*
 优化编译：cargo build --release --bin server4
+运行：RUST_LOG=info ../../target/release/server4
+
 server4.rs 已解决:
 1. 如果client 把socket 关闭了，服务器这边socket_read_task 退出了，怎么通知socket_write_task 退出。 tokio_util cancel()
 2. 如果fdb mac 对应的tx 的接受rx 已经drop, 那么需要删除这个mac 条目
@@ -268,7 +270,7 @@ async fn handle_client(
             let n = match ret {
                 Ok(n) => n,
                 Err(e) => {
-                    println!("---read socket data err:{}", e);
+                    error!("---read socket data err:{}", e);
                     //对方关闭socket,这里读任务会退出, 但是写任务是感知不到的, 怎么通知写任务退出呢？
                     //1. socket 连续发生两次数据后退出：socket 写任务发送数据时，对方才回应reset, 本端必须再发送一次数据，应用层才得到错误broken pipe
                     //2. tokio cacnel future:
@@ -409,7 +411,7 @@ fn build_tun(tap: bool) -> tokio_tun::result::Result<tokio_tun::Tun> {
         .netmask(Ipv4Addr::new(255, 255, 255, 0))
         .try_build()?; // or `.try_build_mq(queues)` for multi-queue support.
 
-    println!(
+    info!(
         "tun created, name: {}, mtu:{}, tap:{}, address:{}, netmask:{}",
         tun.name(),
         tun.mtu().unwrap(),
@@ -435,7 +437,8 @@ fn get_smac(buf: &[u8]) -> (std::result::Result<MacAddr, &str>, bool) {
             // println!("ipv4 or arp");
             // let smac = packet.get_source();
             // println!("get smac:{:?}, ethertype:{}", smac, packet.get_ethertype());
-            // return Ok(smac);
+            debug!("get smac:{:?}, ethertype:{}", smac, packet.get_ethertype());
+            // return Ok(smac);//by clippy
             (Ok(packet.get_source()), is_arp)
         }
         _ => (Err("get smac fail"), false),
@@ -479,7 +482,7 @@ async fn forward_by_fdb(fdb_clone: &Fdb, ports_clone: &Ports, buf: &[u8]) {
     let dmac = match get_dmac(&buf[2..]) {
         Ok(dmac) => dmac,
         Err(e) => {
-            println!("err:{}", e);
+            error!("err:{}", e);
             return;
         }
     };
