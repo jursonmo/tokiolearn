@@ -1,29 +1,42 @@
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
+//use tokio::time::{sleep, Duration};
 //把文件放到src/bin 下，vscode 才进行语法分析？
 #[tokio::main]
 async fn main() {
-    let (tx1, mut rx1) = mpsc::channel(128);
+    let (tx1, mut rx1) = mpsc::channel::<&str>(128);
     let (tx2, mut rx2) = mpsc::channel(128);
 
     tokio::spawn(async move {
         // 用 tx1 和 tx2 干一些不为人知的事
-        sleep(Duration::from_secs(1)).await;
+        //sleep(Duration::from_secs(1)).await;
         // let _ = tx1.send("tx1").await;
         // let _ = tx2.send("tx2").await;
-        let _ = tx1.send("tx1");
-        let _ = tx2.send("tx2");
+        let _ = tx1.send("tx1").await;
+        //let _ = tx2.send("tx2"); //tokio::sync::mpsc::channel  tx.send() 必须用await 才真正执行。这里没加.await导致select打印("Both channels closed")
+        //sleep(Duration::from_secs(3)).await;
     });
+    tokio::spawn(async move {
+        let _ = tx2.send("tx2").await; //tokio::sync::mpsc::channel  tx.send() 必须用await 才真正执行。
+    });
+    let mut n = 0;
+    loop {
+        n += 1;
+        if n > 4 {
+            break;
+        }
+        println!("tokio select n:{}", n);
+        tokio::select! {
+            Some(v) = rx1.recv() => {
+                println!("Got {:?} from rx1", v);
+            }
+            Some(v) = rx2.recv() => {
+                println!("Got {:?} from rx2", v);
+            }
+            else => {
+                println!("Both channels closed");
+                return;
+            }
 
-    tokio::select! {
-        Some(v) = rx1.recv() => {
-            println!("Got {:?} from rx1", v);
-        }
-        Some(v) = rx2.recv() => {
-            println!("Got {:?} from rx2", v);
-        }
-        else => {
-            println!("Both channels closed");
         }
     }
 }
