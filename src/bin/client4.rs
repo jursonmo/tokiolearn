@@ -192,13 +192,15 @@ fn build_tun(iface: &str, ip: &str, tap: bool) -> tokio_tun::result::Result<toki
     use std::net::{IpAddr, Ipv4Addr};
 
     let mut ip4 = Ipv4Addr::new(10, 0, 0, 2);
-    let mut ip4net = Ipv4Addr::new(255, 255, 255, 0);
+    let mut ip4mask = Ipv4Addr::new(255, 255, 255, 0);
     let net: IpNet = ip.parse().unwrap();
     if let IpAddr::V4(ipv4) = net.addr() {
         ip4 = ipv4;
+        info!("ip4:{:?}", ip4);
     }
-    if let IpAddr::V4(ipv4net) = net.network() {
-        ip4net = ipv4net;
+    if let IpAddr::V4(ipv4net) = net.netmask() {
+        ip4mask = ipv4net;
+        info!("ip4mask:{:?}", ip4mask);
     }
 
     let tun = TunBuilder::new()
@@ -210,7 +212,7 @@ fn build_tun(iface: &str, ip: &str, tap: bool) -> tokio_tun::result::Result<toki
         //.address(Ipv4Addr::new(10, 0, 0, 2))
         //.netmask(Ipv4Addr::new(255, 255, 255, 0))
         .address(ip4)
-        .netmask(ip4net)
+        .netmask(ip4mask)
         .try_build()?; // or `.try_build_mq(queues)` for multi-queue support.
 
     info!(
