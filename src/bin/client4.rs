@@ -23,7 +23,11 @@ struct Args {
     #[arg(short = 'n', long, default_value_t = String::from("mytun0"))]
     tuntap: String,
 
-    ///is that tap iface
+    /// the tun/tap iface name
+    #[arg(short = 'i', long, default_value_t = String::from("10.0.0.2/24"))]
+    tunip: String,
+
+    ///is tap iface
     #[arg(short, long, default_value_t = true)]
     tap: bool,
 }
@@ -66,7 +70,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let (r, mut w) = io::split(stream); //stream.split();
 
         //create tun/tap iface
-        let tun = build_tun(&args.tuntap, args.tap).unwrap();
+        let tun = build_tun(&args.tuntap, &args.tunip, args.tap).unwrap();
         let (mut tun_reader, mut tun_writer) = tokio::io::split(tun);
 
         //1. socket read --> tx -->rx --> tun write
@@ -183,8 +187,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 use tokio_tun::TunBuilder;
-fn build_tun(iface: &str, tap: bool) -> tokio_tun::result::Result<tokio_tun::Tun> {
-    use std::net::Ipv4Addr;
+fn build_tun(iface: &str, ip: &str, tap: bool) -> tokio_tun::result::Result<tokio_tun::Tun> {
+    use ipnet::IpNet;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let mut ip4 = Ipv4Addr::new(10, 0, 0, 2);
+    let mut ip4net = Ipv4Addr::new(255, 255, 255, 0);
+    let net: IpNet = ip.parse().unwrap();
+    if let IpAddr::V4(ipv4) = net.addr() {
+        ip4 = ipv4;
+    }
+    if let IpAddr::V4(ipv4net) = net.network() {
+        ip4net = ipv4net;
+    }
 
     let tun = TunBuilder::new()
         .name(iface) // if name is empty, then it is set by kernel.
@@ -192,8 +207,10 @@ fn build_tun(iface: &str, tap: bool) -> tokio_tun::result::Result<tokio_tun::Tun
         .packet_info(false) // false: IFF_NO_PI, default is true.
         .mtu(1500)
         .up() // or set it up manually using `sudo ip link set <tun-name> up`.
-        .address(Ipv4Addr::new(10, 0, 0, 2))
-        .netmask(Ipv4Addr::new(255, 255, 255, 0))
+        //.address(Ipv4Addr::new(10, 0, 0, 2))
+        //.netmask(Ipv4Addr::new(255, 255, 255, 0))
+        .address(ip4)
+        .netmask(ip4net)
         .try_build()?; // or `.try_build_mq(queues)` for multi-queue support.
 
     info!(
