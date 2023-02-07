@@ -7,7 +7,7 @@ server4.rs 已解决:
 2. 如果fdb mac 对应的tx 的接受rx 已经drop, 那么需要删除这个mac 条目
 3. fdb学习时：如果是arp, 必须更新fdb, 不管条目是否已经存在。如果是其他数据, 只有fdb mac 条目不存在时才插入新条目
 4. log:env_logger, todo: 能否提供接口实时修改日志level
-5. todo: 跟client3 一样有命令行提示
+5. todo: 跟client3 一样有命令行提示(fixed)
 6.
 */
 
@@ -17,7 +17,6 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::Sender;
 
 use std::collections::HashMap;
-use std::env;
 use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -40,17 +39,49 @@ type Ports = Arc<Mutex<HashMap<String, Arc<Mutex<Sender<Vec<u8>>>>>>>;
     任务1：socket 读到数据，就放到tun_channel 里，等待tun 任务写入tun 接口。
     任务2: 循环读取自己channel 的数据，发给对端
 */
+
+use clap::Parser;
+/// Simple server program of vpn
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// local addr to listen
+    #[arg(short, long, default_value_t = String::from("0.0.0.0:8080"))]
+    addr: String,
+
+    /// the tun/tap iface name
+    #[arg(short = 'n', long, default_value_t = String::from("mytun0"))]
+    tuntap: String,
+
+    /// the tun/tap iface name
+    #[arg(short = 'i', long, default_value_t = String::from("10.0.0.1/24"))]
+    tunip: String,
+
+    ///is tap iface
+    #[arg(short, long, default_value_t = true)]
+    tap: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let addr = env::args()
-        .nth(1)
-        .unwrap_or_else(|| "0.0.0.0:8080".to_string());
-
     env_logger::init();
+    let args = Args::parse();
+    println!("args:{:?}", args);
+
+    // use std::env;
+    // let addr = env::args()
+    //     .nth(1)
+    //     .unwrap_or_else(|| "0.0.0.0:8080".to_string());
+    let addr = args.addr;
+
     let listener = TcpListener::bind(&addr).await?;
     info!("Listening on: {}", addr);
 
-    let tun = build_tun(true).unwrap();
+    //create tun/tap iface
+    //let tun = build_tun(true).unwarp();
+    // let tun = build_tun(&args.tuntap, &args.tunip, args.tap)
+    //     .unwrap_or_else(|e| println!("build tun err:{}", e));
+    let tun = build_tun(&args.tuntap, &args.tunip, args.tap).unwrap();
     let (mut tun_reader, mut tun_writer) = tokio::io::split(tun);
     let (tun_chan_tx, mut tun_chan_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
 
@@ -400,17 +431,32 @@ async fn handle_client(
 }
 
 use tokio_tun::TunBuilder;
-fn build_tun(tap: bool) -> tokio_tun::result::Result<tokio_tun::Tun> {
-    use std::net::Ipv4Addr;
+fn build_tun(iface: &str, ip: &str, tap: bool) -> tokio_tun::result::Result<tokio_tun::Tun> {
+    use ipnet::IpNet;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let mut ip4 = Ipv4Addr::new(10, 0, 0, 1);
+    let mut ip4mask = Ipv4Addr::new(255, 255, 255, 0);
+    let net: IpNet = ip.parse().unwrap();
+    if let IpAddr::V4(ipv4) = net.addr() {
+        ip4 = ipv4;
+        info!("ip4:{:?}", ip4);
+    }
+    if let IpAddr::V4(ipv4net) = net.netmask() {
+        ip4mask = ipv4net;
+        info!("ip4mask:{:?}", ip4mask);
+    }
 
     let tun = TunBuilder::new()
-        .name("mytun0") // if name is empty, then it is set by kernel.
+        .name(iface) // if name is empty, then it is set by kernel.
         .tap(tap) // false (default): TUN, true: TAP.
         .packet_info(false) // false: IFF_NO_PI, default is true.
         .mtu(1500)
         .up() // or set it up manually using `sudo ip link set <tun-name> up`.
-        .address(Ipv4Addr::new(10, 0, 0, 1))
-        .netmask(Ipv4Addr::new(255, 255, 255, 0))
+        //.address(Ipv4Addr::new(10, 0, 0, 1))
+        //.netmask(Ipv4Addr::new(255, 255, 255, 0))
+        .address(ip4)
+        .netmask(ip4mask)
         .try_build()?; // or `.try_build_mq(queues)` for multi-queue support.
 
     info!(
@@ -437,13 +483,13 @@ fn get_smac(buf: &[u8]) -> (std::result::Result<MacAddr, &str>, bool) {
         }
         EtherTypes::Ipv4 => {
             // println!("ipv4 or arp");
-            // let smac = packet.get_source();
+            let smac = packet.get_source();
             // println!("get smac:{:?}, ethertype:{}", smac, packet.get_ethertype());
-            debug!("get smac:{:?}, ethertype:{}", smac, packet.get_ethertype());
+            debug!("get smac:{:?}, ethertype:{}", smac, EtherTypes::Ipv4);
             // return Ok(smac);//by clippy
-            (Ok(packet.get_source()), is_arp)
+            (Ok(smac), is_arp)
         }
-        _ => (Err("get smac fail"), false),
+        _ => (Err("get smac fail, unknown ethertype"), false),
     }
     //Err("get smac fail")
 }
@@ -452,10 +498,10 @@ fn get_dmac(buf: &[u8]) -> std::result::Result<MacAddr, &str> {
     match packet.get_ethertype() {
         EtherTypes::Ipv4 | EtherTypes::Arp => {
             //println!("ipv4 or arp");
-            let smac = packet.get_destination();
-            //println!("get dmac:{:?}", smac);
-            //return Ok(smac);
-            Ok(smac)
+            let dmac = packet.get_destination();
+            //println!("get dmac:{:?}", dmac);
+            //return Ok(dmac);
+            Ok(dmac)
         }
         _ => Err("get dmac fail"),
     }
