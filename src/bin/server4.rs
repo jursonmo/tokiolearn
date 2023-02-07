@@ -389,6 +389,18 @@ async fn handle_client(
         //     socket_info_clone
         // );
         loop {
+            //先循环try_recv, 没有数据后才tokio::select, 避免频繁select 性能有下降
+            if let Ok(data) = rx.try_recv() {
+                let ret = w.write(data.as_slice()).await;
+                match ret {
+                    Ok(n) => debug!("read from tun and write to socket n:{}", n),
+                    Err(e) => {
+                        error!("write to socket err:{}, return", e);
+                        return;
+                    }
+                }
+                continue;
+            }
             tokio::select! {
                 _= cloned_token.cancelled() => {
                     error!("socket_write_task have been cancelled");
