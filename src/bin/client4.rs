@@ -36,7 +36,7 @@ struct Args {
 async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
     let args = Args::parse();
-
+    println!("args:{:?}", args);
     let addr = args.addr.as_str();
 
     //check addr valid
@@ -146,6 +146,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let n = tun_reader.read(&mut buf[2..]).await?;
             debug!("tun read, n:{}", n);
             BigEndian::write_u16(&mut buf, n as u16);
+            /*
             let ret = w.write(&buf[..n + 2]).await;
             //发现ctrl+c 服务器的程序后，调用w.write()时，是无法感知socket 已经关闭的，需要下次再write,才发现错误Broken pipe
             //原因是ctrl+c 服务器的程序后，服务器发送fin,并没有发送reset(一般是发送reset的), 所以client 需要发送一次数据给服务器，
@@ -168,6 +169,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     //return Ok(());
                     break;
                 }
+            }*/
+
+            //fixbug:必须用发完从tun读到的内容，
+            //如果用write(), 可能会发生short write,需要处理这种情况
+            //最好直接用write_all 保证发完buf中的所有数据
+            if let Err(e) = w.write_all(&buf[..n + 2]).await {
+                error!("socket write err:{}", e);
+                break;
             }
         }
 
