@@ -73,6 +73,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let tun = build_tun(&args.tuntap, &args.tunip, args.tap).unwrap();
         let (mut tun_reader, mut tun_writer) = tokio::io::split(tun);
 
+        use tokio_util::sync::CancellationToken;
+        let token = CancellationToken::new();
+        let cloned_token = token.clone();
+
         //1. socket read --> tx -->rx --> tun write
         let socket_read_task = tokio::spawn(async move {
             let mut buf: [u8; 2048] = [0; 2048];
@@ -85,6 +89,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         error!("socket read err:{}, quit loop", e);
                         //todo: 应该通知socket write 任务退出，不然要socket 多发送两次数据才能感知错误broken pipe然后退出
                         //这样就很难及时的发起重连, 所以必须想办法通知socket write 任务退出
+                        token.cancel();
                         return; //return, over task
                     }
                 };
@@ -145,7 +150,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         //2. tun read --> socket write
         let mut buf = [0u8; 2048];
         loop {
-            let n = tun_reader.read(&mut buf[2..]).await?; //socket 关闭了，这里也阻塞，知道有数据可读
+            /*
+            let n = tun_reader.read(&mut buf[2..]).await?; //对方把socket关闭了，这里会一直阻塞，直到tun有数据可读
             debug!("tun read, n:{}", n);
             BigEndian::write_u16(&mut buf, n as u16);
             /*
@@ -179,6 +185,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if let Err(e) = w.write_all(&buf[..n + 2]).await {
                 error!("socket write err:{}", e);
                 break;
+            }
+            */
+            //fix: 对方把socket关闭了，上面的代码会一直阻塞在tun read，没法取消，直到tun有数据可读
+            //tokio::select就保证在tun 没数据可读的情况，也能取消这个任务，返回
+            tokio::select! {
+                _= cloned_token.cancelled() => {
+                    error!("socket_write_task have been cancelled");
+                    break;//break loop
+                }
+                Ok(n) = tun_reader.read(&mut buf[2..]) => {
+                    debug!("tun read, n:{}", n);
+                    BigEndian::write_u16(&mut buf, n as u16);
+                    //如果用write(), 可能会发生short write,
+                    if let Err(e) = w.write_all(&buf[..n + 2]).await {
+                        error!("socket write err:{}", e);
+                        break;
+                    }
+                }
             }
         }
 
