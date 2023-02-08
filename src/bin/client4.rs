@@ -83,6 +83,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     Ok(n) => n,
                     Err(e) => {
                         error!("socket read err:{}, quit loop", e);
+                        //todo: 应该通知socket write 任务退出，不然要socket 多发送两次数据才能感知错误broken pipe然后退出
+                        //这样就很难及时的发起重连, 所以必须想办法通知socket write 任务退出
                         return; //return, over task
                     }
                 };
@@ -143,7 +145,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         //2. tun read --> socket write
         let mut buf = [0u8; 2048];
         loop {
-            let n = tun_reader.read(&mut buf[2..]).await?;
+            let n = tun_reader.read(&mut buf[2..]).await?; //socket 关闭了，这里也阻塞，知道有数据可读
             debug!("tun read, n:{}", n);
             BigEndian::write_u16(&mut buf, n as u16);
             /*
