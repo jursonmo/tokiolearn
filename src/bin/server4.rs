@@ -333,6 +333,8 @@ async fn handle_client(
 
             debug!("socket read payload data n:{}", n);
 
+            //fdb learn
+            /*
             let (mac, is_arp) = get_smac(&buf[..n]);
             match mac {
                 Ok(smac) => {
@@ -353,7 +355,8 @@ async fn handle_client(
                     }
                 }
                 Err(e) => debug!("{}", e),
-            }
+            }*/
+            learn(&fdb_clone, &buf[..n], &atx).await;
 
             let mut v: Vec<u8> = Vec::with_capacity(n);
             v.extend_from_slice(&buf[..n]);
@@ -609,5 +612,29 @@ async fn forward_by_fdb(fdb_clone: &Fdb, ports_clone: &Ports, buf: &[u8]) {
         } else {
             debug!("forward tun data to socket:{} channel", socket);
         }
+    }
+}
+
+async fn learn(fdb_clone: &Fdb, buf: &[u8], atx: &Arc<Mutex<Sender<Vec<u8>>>>) {
+    let (mac, is_arp) = get_smac(buf);
+    match mac {
+        Ok(smac) => {
+            debug!("get smac:{}, is_arp:{}, try to insert fdb", smac, is_arp);
+            let mut fdb = fdb_clone.lock().await;
+            //entry.or_insert 只有不存在时才插入，存在就返回当前值
+            //fdb.entry(smac).or_insert(Arc::clone(&atx));
+            if is_arp {
+                //如果是arp, 必须更新fdb, 不管条目是否已经存在。
+                match fdb.insert(smac, Arc::clone(atx)) {
+                    //每个数据包都要调用Arc::clone,不合适，最好还是用entry(smac).or_insert
+                    Some(v) => info!("update ok , mac:{:?} old value:{:?}", smac, v),
+                    None => info!("insert new mac:{} to fdb", smac),
+                }
+            } else {
+                //如果是其他数据, 只有fdb mac 条目不存在时才插入新条目
+                fdb.entry(smac).or_insert(Arc::clone(atx));
+            }
+        }
+        Err(e) => debug!("{}", e),
     }
 }
