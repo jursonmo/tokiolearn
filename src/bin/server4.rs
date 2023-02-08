@@ -391,6 +391,7 @@ async fn handle_client(
         loop {
             //先循环try_recv, 没有数据后才tokio::select, 避免频繁select 性能有下降
             if let Ok(data) = rx.try_recv() {
+                /*
                 let ret = w.write(data.as_slice()).await;
                 match ret {
                     Ok(n) => debug!("read from tun and write to socket n:{}", n),
@@ -398,6 +399,11 @@ async fn handle_client(
                         error!("write to socket err:{}, return", e);
                         return;
                     }
+                }*/
+                //fixbug: write_all确保发完数据才返回，不然可能会出现short_write, 导致数据不完整
+                if let Err(e) = w.write_all(data.as_slice()).await {
+                    error!("write to socket err:{}", e);
+                    return;
                 }
                 continue;
             }
@@ -408,13 +414,11 @@ async fn handle_client(
                 }
                 recv = rx.recv() => {
                     if let Some(data) = recv{
-                        let ret = w.write(data.as_slice()).await;
-                        match ret {
-                            Ok(n) => debug!("read from tun and write to socket n:{}", n),
-                            Err(e) => {
-                                error!("write to socket err:{}, return", e);
-                                return;
-                            }
+                        //fixbug: 用write_all确保发完数据才返回，不然可能会出现short_write, 导致数据不完整
+                        // let ret = w.write(data.as_slice()).await;
+                        if let Err(e) = w.write_all(data.as_slice()).await {
+                            error!("write to socket err:{}", e);
+                            return;
                         }
                     }else {
                         error!("socket:{}, quit loop of rx read, tx have been dropped?",socket_info_clone);
