@@ -221,22 +221,53 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let (socket_read_task_result, tun_write_task_result) =
             tokio::join!(socket_read_task, tun_write_task);
         match socket_read_task_result {
-            Ok(_) => info!("socket_read_task completed ok"),
+            Ok(_) => warn!("socket_read_task completed ok"),
             Err(e) => error!("socket_read_task completed err:{}", e),
         }
         match tun_write_task_result {
-            Ok(_) => info!("tun_write_task completed ok"),
+            Ok(_) => warn!("tun_write_task completed ok"),
             Err(e) => error!("tun_write_task completed err:{}", e),
         }
         error!("socket {} all task over", socket_info);
     }
 }
 
+use ipnet::IpNet;
+use std::default::Default;
+use std::net::{IpAddr, Ipv4Addr};
+#[derive(Debug)]
+struct MyIpv4Addr(Ipv4Addr);
+impl Default for MyIpv4Addr {
+    fn default() -> Self {
+        MyIpv4Addr(Ipv4Addr::new(0, 0, 0, 0))
+    }
+}
+#[allow(dead_code)]
+fn get_ip_and_mask(ip: &str) -> std::result::Result<(Ipv4Addr, Ipv4Addr), &str> {
+    #[allow(unused_assignments)]
+    let mut ip4 = Default::default();
+    #[allow(unused_assignments)]
+    let mut ip4mask = Default::default();
+    let net: IpNet = ip.parse().unwrap();
+    if let IpAddr::V4(ipv4) = net.addr() {
+        ip4 = MyIpv4Addr(ipv4);
+        info!("ip4:{:?}", ip4);
+    } else {
+        return Err("parse ipv4addr fail");
+    }
+
+    if let IpAddr::V4(ipv4net) = net.netmask() {
+        ip4mask = MyIpv4Addr(ipv4net);
+        info!("ip4mask:{:?}", ip4mask);
+    } else {
+        return Err("parse ipv4 netmask fail");
+    }
+    return Ok((ip4.0, ip4mask.0));
+}
+
 use tokio_tun::TunBuilder;
 fn build_tun(iface: &str, ip: &str, tap: bool) -> tokio_tun::result::Result<tokio_tun::Tun> {
-    use ipnet::IpNet;
-    use std::net::{IpAddr, Ipv4Addr};
-
+    /*
     let mut ip4 = Ipv4Addr::new(10, 0, 0, 2);
     let mut ip4mask = Ipv4Addr::new(255, 255, 255, 0);
     let net: IpNet = ip.parse().unwrap();
@@ -248,7 +279,8 @@ fn build_tun(iface: &str, ip: &str, tap: bool) -> tokio_tun::result::Result<toki
         ip4mask = ipv4net;
         info!("ip4mask:{:?}", ip4mask);
     }
-
+    */
+    let (ip4, ip4mask) = get_ip_and_mask(ip).unwrap();
     let tun = TunBuilder::new()
         .name(iface) // if name is empty, then it is set by kernel.
         .tap(tap) // false (default): TUN, true: TAP.
