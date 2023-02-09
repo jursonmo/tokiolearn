@@ -1,6 +1,8 @@
 /*
+运行: cargo run --bin server4
 优化编译：cargo build --release --bin server4
-运行：RUST_LOG=info ../../target/release/server4
+或者直接优化编译并运行 cargo run --release --bin server4
+指定log level 运行：RUST_LOG=info ../../target/release/server4
 
 server4.rs 已解决:
 1. 如果client 把socket 关闭了，服务器这边socket_read_task 退出了，怎么通知socket_write_task 退出。 tokio_util cancel()
@@ -79,9 +81,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     //create tun/tap iface
     //let tun = build_tun(true).unwarp();
-    // let tun = build_tun(&args.tuntap, &args.tunip, args.tap)
-    //     .unwrap_or_else(|e| println!("build tun err:{}", e));
-    let tun = build_tun(&args.tuntap, &args.tunip, args.tap).unwrap();
+    //let tun = build_tun(&args.tuntap, &args.tunip, args.tap).unwrap();
+    let tun = match build_tun(&args.tuntap, &args.tunip, args.tap) {
+        Ok(tun) => tun,
+        Err(e) => {
+            error!("{}", e);
+            return Err(e);
+        }
+    };
+
     let (mut tun_reader, mut tun_writer) = tokio::io::split(tun);
     let (tun_chan_tx, mut tun_chan_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
 
@@ -454,16 +462,32 @@ fn build_tun(iface: &str, ip: &str, tap: bool) -> tokio_tun::result::Result<toki
     use ipnet::IpNet;
     use std::net::{IpAddr, Ipv4Addr};
 
+    #[allow(unused_assignments)]
     let mut ip4 = Ipv4Addr::new(10, 0, 0, 1);
+    #[allow(unused_assignments)]
     let mut ip4mask = Ipv4Addr::new(255, 255, 255, 0);
     let net: IpNet = ip.parse().unwrap();
     if let IpAddr::V4(ipv4) = net.addr() {
         ip4 = ipv4;
         info!("ip4:{:?}", ip4);
+    } else {
+        let a_str_error = "ip.parse to Ipv4Addr fail";
+        /*
+        pub trait From<T> {
+            fn from(T) -> Self;
+        }
+        */
+        //impl From<&'_ str> for Box<dyn Error>
+        //https://rustwiki.org/zh-CN/std/boxed/struct.Box.html#examples-46
+        return Err(Box::<dyn Error>::from(a_str_error));
     }
+
     if let IpAddr::V4(ipv4net) = net.netmask() {
         ip4mask = ipv4net;
         info!("ip4mask:{:?}", ip4mask);
+    } else {
+        let a_str_error = "ip.parse to Ipv4Addr netmask fail";
+        return Err(Box::<dyn Error>::from(a_str_error));
     }
 
     let tun = TunBuilder::new()
