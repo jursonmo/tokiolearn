@@ -1,3 +1,9 @@
+/*
+运行: cargo run --bin client4
+优化编译：cargo build --release --bin client4
+或者直接优化编译并运行 cargo run --release --bin client4
+指定log level 运行：RUST_LOG=info ../../target/release/client4
+*/
 use std::error::Error;
 use std::net::SocketAddr;
 use std::process;
@@ -34,6 +40,11 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    use std::env;
+    //如果没有设置RUST_LOG环境变量, 就设置成info level
+    if env::var("RUST_LOG").is_err() {
+        env::set_var("RUST_LOG", "info")
+    }
     env_logger::init();
     let args = Args::parse();
     println!("args:{:?}", args);
@@ -106,7 +117,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if n == 0 {
                     error!(
                         "socket:{} read loop quit, tx channel will be dropped",
-                        socket_info
+                        socket_info_clone
                     );
                     return;
                 }
@@ -217,7 +228,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(_) => info!("tun_write_task completed ok"),
             Err(e) => error!("tun_write_task completed err:{}", e),
         }
-        warn!("socket {} all task over", socket_info_clone);
+        error!("socket {} all task over", socket_info);
     }
 }
 
