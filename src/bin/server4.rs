@@ -520,9 +520,13 @@ fn build_tun(iface: &str, ip: &str, tap: bool) -> tokio_tun::result::Result<toki
         return Err(Box::<dyn Error>::from(a_str_error));
     }
 
-    //可以用get_ip_and_mask 来代替上面的代码
-    //let (ip4, ip4mask) = get_ip_and_mask(ip).unwrap();
-
+    /*
+       //可以用get_ip_and_mask 来代替上面的代码
+       let (ip4, ip4mask) = match get_ip_and_mask(ip) {
+           Ok(ip_mask) => ip_mask,
+           Err(e) => return Err(Box::<dyn Error>::from(e)),
+       };
+    */
     let tun = TunBuilder::new()
         .name(iface) // if name is empty, then it is set by kernel.
         .tap(tap) // false (default): TUN, true: TAP.
@@ -633,6 +637,7 @@ async fn forward_by_fdb(fdb_clone: &Fdb, ports_clone: &Ports, buf: &[u8]) {
             should_remove = true;
         }
         if should_remove {
+            //使用 std::mem::drop 来销毁 ttx
             drop(ttx); //结束ttx的作用域;  --- db_clone immutable borrow later used here; 这样就可以对db_clone进行可变引用了。
             db_clone.remove(&dmac); //如果没有接受者,可以把这个fdb条目删除
         }
