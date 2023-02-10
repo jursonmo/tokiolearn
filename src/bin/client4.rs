@@ -3,6 +3,10 @@
 优化编译：cargo build --release --bin client4
 或者直接优化编译并运行 cargo run --release --bin client4
 指定log level 运行：RUST_LOG=info ../../target/release/client4
+
+cargo test 会去执行所有文件里的单元测试
+单独运行src/bin/client4.rs 的单元测试： cargo test --bin client4
+
 */
 use std::error::Error;
 use std::net::SocketAddr;
@@ -81,7 +85,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let (r, mut w) = io::split(stream); //stream.split();
 
         //create tun/tap iface
-        let tun = build_tun(&args.tuntap, &args.tunip, args.tap).unwrap();
+        //let tun = build_tun(&args.tuntap, &args.tunip, args.tap).unwrap();
+        let tun = match build_tun(&args.tuntap, &args.tunip, args.tap) {
+            Ok(tun) => tun,
+            Err(e) => {
+                error!("{}", e);
+                return Err(e);
+            }
+        };
         let (mut tun_reader, mut tun_writer) = tokio::io::split(tun);
 
         use tokio_util::sync::CancellationToken;
@@ -280,7 +291,14 @@ fn build_tun(iface: &str, ip: &str, tap: bool) -> tokio_tun::result::Result<toki
         info!("ip4mask:{:?}", ip4mask);
     }
     */
-    let (ip4, ip4mask) = get_ip_and_mask(ip).unwrap();
+
+    //可以用get_ip_and_mask 来代替上面的代码, 同时如果发现有错，即使返回
+    //let (ip4, ip4mask) = get_ip_and_mask(ip).unwrap();
+    let (ip4, ip4mask) = match get_ip_and_mask(ip) {
+        Ok(ip_mask) => ip_mask,
+        Err(e) => return Err(Box::<dyn Error>::from(e)),
+    };
+
     let tun = TunBuilder::new()
         .name(iface) // if name is empty, then it is set by kernel.
         .tap(tap) // false (default): TUN, true: TAP.
@@ -334,4 +352,23 @@ async fn connect_with_timeout(
             return Err(err);
         }
     };
+}
+
+//cargo test --bin client4
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_get_ip_and_mask() {
+        let ipstr = "192.168.10.1/24";
+        let (ip, mask) = get_ip_and_mask(ipstr).unwrap();
+        assert_eq!(ip, Ipv4Addr::new(192, 168, 10, 1));
+        assert_eq!(mask, Ipv4Addr::new(255, 255, 255, 0));
+    }
+    #[test]
+    #[should_panic]
+    fn test_xx() {
+        let invalid_ip = "192.168.10.x/24";
+        let (_, _) = get_ip_and_mask(invalid_ip).unwrap();
+    }
 }
